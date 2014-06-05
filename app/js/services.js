@@ -27,11 +27,15 @@ angular.module('myApp.services', ["firebase"])
     var auth_obj = $firebaseSimpleLogin(new Firebase(FBURL));
 
     this.current_user = null;
-    this.authenticated = FB.obj('/.info/authenticated');
-    this.connected = FB.obj('/.info/connected');
+    this.authenticated = FB.FbRef('/.info/authenticated');
+    this.connected = FB.FbRef('/.info/connected');
 
     this.login_anon = function() {
-      return auth_obj.$login('anonymous', { rememberMe: true });
+      return auth_obj.$getCurrentUser().then(function(user) {
+        if (!user) {
+          return auth_obj.$login('anonymous', {rememberMe: true});
+        }
+      });
     };
 
     this.logout = function() {
@@ -49,6 +53,7 @@ angular.module('myApp.services', ["firebase"])
     var that = this;
     $rootScope.$on('$firebaseSimpleLogin:login', function(event, user) {
       that.current_user = user;
+      console.log('Login as:', user.id);
     });
 
     $rootScope.$on('$firebaseSimpleLogin:logout', function() {
@@ -58,26 +63,31 @@ angular.module('myApp.services', ["firebase"])
   }
 ])
 
-.service('Matchmaker', ['FB', 'FBAuth', '$q', '$timeout',
-  function(FB, FBAuth, $q, $timeout) {
+.service('Matchmaker', ['FB', 'FBAuth', '$q', '$timeout', '$rootScope',
+  function(FB, FBAuth, $q, $timeout, $rootScope) {
     var that = this;
     var deferred_game_id = $q.defer();
 
+    var Events =  {
+      gameFound: 'matchmaker:gameFound'
+    };
+
     // firebase references
-    var $rooms           = FB.obj('/rooms'),
-        $available_rooms = FB.obj('/available_rooms'),
+    var $games           = FB.obj('/games'),
+        $available_games = FB.obj('/available_games'),
+        $users = FB.obj('/users'),
         /* query */
-        available_room   = FB.FbRef('/available_rooms').startAt().limit(1),
-        $available_room  = FB.obj(available_room);
+        available_game   = FB.FbRef('/available_games').startAt().limit(1),
+        $available_game  = FB.obj(available_game);
 
     this.game_id = deferred_game_id.promise;
 
     // match current player with an opponent, set up game
     // returns promise
     this.match = function() {
-      return findGame().then(function(hasRoom) {
-        if (!hasRoom) {
-          return makeRoom();
+      return findGame().then(function(hasGame) {
+        if (!hasGame) {
+          return makeGame();
         }
       });
     };
@@ -85,7 +95,7 @@ angular.module('myApp.services', ["firebase"])
     function findGame() {
       var deferred = $q.defer();
 
-      $available_room.$on('loaded', function(game) {
+      $available_game.$on('loaded', function(game) {
         if (game) {
           var game_id = Object.keys(game)[0],
               player_id = game[game_id];
@@ -93,7 +103,7 @@ angular.module('myApp.services', ["firebase"])
           // do not match player with self
           if (FBAuth.current_user.id != player_id) {
             deferred.resolve(true);
-            $available_room.$remove(game_id);
+            $available_game.$remove(game_id);
             pair(game_id);
           } else { deferred.resolve(false); }
 
@@ -103,27 +113,27 @@ angular.module('myApp.services', ["firebase"])
       return deferred.promise;
     }
 
-    function makeRoom() {
-      return $rooms
+    function makeGame() {
+      return $games
         .$add({ player1: FBAuth.current_user })
         .then(function(game) {
-          deferred_game_id.resolve(game.name());
-          return $available_rooms
+          broadcastEvent(game.name());
+          return $available_games
             .$child(game.name())
             .$set(FBAuth.current_user.id);
         });
     }
 
     function pair(game_id) {
-      var $game = $rooms.$child(game_id);
+      var $game = $games.$child(game_id);
       $game.$child('player2').$set(FBAuth.current_user);
       prepareGame(game_id);
-      deferred_game_id.resolve(game_id);
+      broadcastEvent(game_id);
     }
 
     function prepareGame(game_id) {
       // add questions
-      var $questions = $rooms.$child(game_id).$child('questions');
+      var $questions = $games.$child(game_id).$child('questions');
       $questions.$set([
         {q: "This"},
         {q: "is"},
@@ -133,15 +143,22 @@ angular.module('myApp.services', ["firebase"])
       ]);
     }
 
-    /*run test
-    var that = this;
-    $timeout(function() {
-      that.match();
-    }, 1000);
-    */
+    function broadcastEvent(game_id) {
+      $rootScope.$emit(Events.gameFound, game_id);
+    }
+
+  }
+])
+
+.service('GameManager', ['FBAuth', '$location', '$rootScope',
+  function(FBAuth, $location, $rootScope) {
+
+    $rootScope.$on('matchmaker:gameFound', function(event, game_id) {
+    });
 
   }
 ]);
+
 
 })();
 
