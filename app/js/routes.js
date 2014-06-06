@@ -2,18 +2,29 @@
 
 angular.module('myApp.routes', ['ngRoute'])
 
-   // configure views; the authRequired parameter is used for specifying pages
-   // which should only be available while logged in
-   .config(['$routeProvider', function($routeProvider) {
-      $routeProvider.when('/home', {
-         templateUrl: 'partials/home.html',
-         controller: 'HomeCtrl'
-      });
+ .config(['$routeProvider', function($routeProvider) {
+    $routeProvider.when('/home', {
+       templateUrl: 'partials/home.html',
+       controller: 'HomeCtrl'
+    });
 
-      $routeProvider.when('/game', {
-         templateUrl: 'partials/game.html',
-         controller: 'GameCtrl'
-      });
+    $routeProvider.when('/game', {
+       templateUrl: 'partials/game.html',
+       controller: 'GameCtrl'
+    });
 
-      $routeProvider.otherwise({redirectTo: '/home'});
-   }]);
+    $routeProvider.otherwise({redirectTo: '/home'});
+ }])
+
+.run(['$rootScope', '$location', 'FBAuth',
+  function($rootScope, $location, FBAuth) {
+    // listen for route changes
+    $rootScope.$on('$routeChangeStart', function(event, next, current) {
+      if ($location.path() !== '/home') {
+        if (!FBAuth.current_user) {
+          $location.path('/home');
+        }
+      }
+    });
+  }
+]);
