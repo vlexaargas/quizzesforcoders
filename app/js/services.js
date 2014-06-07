@@ -27,8 +27,6 @@ angular.module('myApp.services', ["firebase"])
     var auth_obj = $firebaseSimpleLogin(new Firebase(FBURL));
 
     this.current_user = null;
-    this.authenticated = FB.FbRef('/.info/authenticated');
-    this.connected = FB.FbRef('/.info/connected');
 
     this.login_anon = function() {
       return auth_obj.$getCurrentUser().then(function(user) {
@@ -117,7 +115,7 @@ angular.module('myApp.services', ["firebase"])
       return $games
         .$add({ player1: FBAuth.current_user })
         .then(function(game) {
-          broadcastEvent(game.name());
+          broadcastEvent(game.name(), 'player1');
           return $available_games
             .$child(game.name())
             .$set(FBAuth.current_user.id);
@@ -128,7 +126,7 @@ angular.module('myApp.services', ["firebase"])
       var $game = $games.$child(game_id);
       $game.$child('player2').$set(FBAuth.current_user);
       prepareGame(game_id);
-      broadcastEvent(game_id);
+      broadcastEvent(game_id, 'player2');
     }
 
     function prepareGame(game_id) {
@@ -143,17 +141,77 @@ angular.module('myApp.services', ["firebase"])
       ]);
     }
 
-    function broadcastEvent(game_id) {
-      $rootScope.$emit(Events.gameFound, game_id);
+    function broadcastEvent(game_id, player_num) {
+      $rootScope.$emit(Events.gameFound, game_id, player_num);
     }
 
   }
 ])
 
-.service('GameManager', ['FBAuth', '$location', '$rootScope',
-  function(FBAuth, $location, $rootScope) {
+.service('GameManager', ['FB', '$q', '$rootScope', '$location',
+  function(FB, $q, $rootScope, $location) {
+    // init
+    var that = this;
 
-    $rootScope.$on('matchmaker:gameFound', function(event, game_id) {
+    // firebase references
+    var $game = null;
+
+    // 'local' variables
+    var deferred_game_ref = $q.defer();
+    var authenticated = FB.FbRef('/.info/authenticated');
+    var connected = FB.FbRef('/.info/connected');
+    var player = null;
+
+    // 'class' variables
+    this.game = deferred_game_ref.promise;
+
+    /**
+     * MANAGE PLAYERS
+     **/
+    $rootScope.$on('matchmaker:gameFound', function(event, game_id, player_num) {
+      // resolve game promise
+      $game = FB.obj('/games/' + game_id);
+      deferred_game_ref.resolve($game);
+
+      // get player ref - lol, angularfire object does not have 'onDisconnect'
+      player = FB.FbRef('/games/' + game_id + '/' + player_num);
+
+      // handle session-end and refresh
+      connected.on('value', function(snap) {
+        if (snap.val() === true) {
+          player.onDisconnect().remove();
+        }
+      });
+
+      // handle back/forward on history
+      $rootScope.$on('$routeChangeStart', function() {
+        if ($location.path() === '/home') {
+          player.remove();
+          // reset promise
+          deferred_game_ref = $q.defer();
+          that.game = deferred_game_ref.promise;
+        }
+      });
+    });
+
+    /**
+     * MANAGE GAMES
+     **/
+    this.game.then(function($game) {
+      $game.$on('change', function() {
+        // if player 2 leaves...
+        if ($game.questions && $game.player1 && !$game.player2) {
+          console.log('player 2 left');
+
+        // if player 1 leaves...
+        } else if ($game.questions && $game.player2 && !$game.player1) {
+          console.log('player 1 left');
+
+        // if both players leave...
+        } else if ($game.questions && !$game.player2 && !$game.player1) {
+          $game.$remove();
+        }
+      });
     });
 
   }
