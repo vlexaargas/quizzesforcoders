@@ -4,13 +4,13 @@
 
 angular.module('myApp.controllers', [])
 
-.controller('RootCtrl', ['$scope', 'FBAuth', 'GameManager',
-  function($scope, FBAuth, GameManager) {
+.controller('RootCtrl', ['$scope', 'Auth', 'GameManager',
+  function($scope, Auth, GameManager) {
     // scoped variables
     $scope.logout = function() {
-      FBAuth.logout()
-    }
-    FBAuth.login_anon();
+      Auth.logout();
+    };
+    Auth.login_anon();
   }
 ])
 
@@ -19,18 +19,19 @@ angular.module('myApp.controllers', [])
   }
 ])
 
-.controller('GameCtrl', ['$scope', 'Matchmaker', 'GameManager', 'FBAuth',
-  function($scope, Matchmaker, GameManager, FBAuth) {
+.controller('GameCtrl', ['$scope', 'Matchmaker', 'GameManager', 'Auth',
+  function($scope, Matchmaker, GameManager, Auth) {
 
-    $scope.game = "loading";
-    $scope.player = FBAuth.current_user;
-
-    // match current player to game
     Matchmaker.match();
 
-    GameManager.game.then(function(game) {
-      $scope.game = game;
-    });
+    //$scope.game = "loading";
+    //$scope.player = FBAuth.current_user;
+
+    //// match current player to game
+
+    //GameManager.game.then(function(game) {
+      //$scope.game = game;
+    //});
 
   }
 ]);

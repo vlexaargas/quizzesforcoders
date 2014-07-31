@@ -16,12 +16,12 @@ angular.module('myApp.routes', ['ngRoute'])
     $routeProvider.otherwise({redirectTo: '/home'});
  }])
 
-.run(['$rootScope', '$location', 'FBAuth',
-  function($rootScope, $location, FBAuth) {
+.run(['$rootScope', '$location', 'Auth',
+  function($rootScope, $location, Auth) {
     // listen for route changes
     $rootScope.$on('$routeChangeStart', function(event, next, current) {
       if ($location.path() !== '/home') {
-        if (!FBAuth.current_user) {
+        if (!Auth.current_user) {
           $location.path('/home');
         }
       }

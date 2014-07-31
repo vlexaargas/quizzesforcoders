@@ -3,153 +3,249 @@
 
 angular.module('myApp.services', ["firebase"])
 
-.service('FB', ['FBURL', '$firebase',
-  function(FBURL, $firebase, $firebaseSimpleLogin) {
+.service('FB', ['FBURL',
+  function(FBURL) {
 
-    this.obj = function(arg) {
-      if (typeof  arg === 'string') {
-        return $firebase(this.FbRef(arg));
-      } else {
-        return $firebase(arg);
-      }
-    };
-
-    this.FbRef = function(path) {
+    this.ref = function(path) {
       return new Firebase(FBURL + path);
     };
 
   }
 ])
 
-.service('FBAuth', ['FB', 'FBURL', '$firebaseSimpleLogin', '$rootScope', '$q', '$timeout',
-  function(FB, FBURL, $firebaseSimpleLogin, $rootScope, $q, $timeout) {
+.service('AF', ['FBURL', '$firebase', 'FB',
+  function(FBURL, $firebase, FB) {
+
+    this.ref = function(arg) {
+      if (typeof  arg === 'string') {
+        return $firebase(FB.ref(arg));
+      } else {
+        return $firebase(arg);
+      }
+    };
+
+  }
+])
+
+.service('Auth', ['FBURL', '$firebaseSimpleLogin', '$rootScope', '$q', '$timeout',
+  function(FBURL, $firebaseSimpleLogin, $rootScope, $q, $timeout) {
 
     var auth_obj = $firebaseSimpleLogin(new Firebase(FBURL));
 
-    this.current_user = null;
+    var that = this;
 
     this.login_anon = function() {
       return auth_obj.$getCurrentUser().then(function(user) {
         if (!user) {
-          return auth_obj.$login('anonymous', {rememberMe: true});
+          return auth_obj.$login('anonymous', {rememberMe: false});
         }
       });
     };
 
     this.logout = function() {
-      var deferred = $q.defer();
-      auth_obj.$logout();
-      $timeout(function() {
-        deferred.reject();
-      }, 3000);
-      $rootScope.$on('$firebaseSimpleLogin:logout', function() {
-        deferred.resolve();
-      });
-      return deferred.promise;
+      if (that.current_user) {
+        var deferred = $q.defer();
+        auth_obj.$logout();
+        $timeout(function() {
+          deferred.reject();
+        }, 3000);
+        $rootScope.$on('$firebaseSimpleLogin:logout', function() {
+          deferred.resolve();
+        });
+        return deferred.promise;
+      }
     };
 
-    var that = this;
+    this.current_user = null;
+
     $rootScope.$on('$firebaseSimpleLogin:login', function(event, user) {
       that.current_user = user;
-      console.log('Login as:', user.id);
+      console.log('Logged in as:', user.id);
     });
 
     $rootScope.$on('$firebaseSimpleLogin:logout', function() {
       that.current_user = null;
+      console.log('Logged out');
     });
 
   }
 ])
 
-.service('Matchmaker', ['FB', 'FBAuth', '$q', '$timeout', '$rootScope',
-  function(FB, FBAuth, $q, $timeout, $rootScope) {
-    var that = this;
-    var deferred_game_id = $q.defer();
+.service('AngularfireCollection', ['AF', '$q',
+  function(AF, $q) {
 
-    var Events =  {
-      gameFound: 'matchmaker:gameFound'
+    this.list = function(cb, err) { // returns af ref
+      var return_val;
+
+      if (cb || err) {
+        return_val = AF.ref(this.baseURL).$asArray().$loaded(cb, err);
+      } else {
+        return_val = AF.ref(this.baseURL).$asArray();
+      }
+
+      return return_val;
     };
 
-    // firebase references
-    var $games           = FB.obj('/games'),
-        $available_games = FB.obj('/available_games'),
-        $users = FB.obj('/users'),
-        /* query */
-        available_game   = FB.FbRef('/available_games').startAt().limit(1),
-        $available_game  = FB.obj(available_game);
+    this.find = function (name, cb, err) { // returns af ref
+      var return_val;
 
-    this.game_id = deferred_game_id.promise;
+      if (cb || err) {
+        return_val = AF.ref(this.baseURL+'/'+name).$asObject().$loaded(cb,err);
+      } else {
+        return_val = AF.ref(this.baseURL + '/' + name).$asObject();
+      }
 
-    // match current player with an opponent, set up game
-    // returns promise
+      return return_val;
+    };
+
+    this.push = function(data) {
+      return this.list().$add(data);
+    };
+
+  }
+])
+
+.service('Game', ['AF', 'AngularfireCollection',
+  function(AF, AngularfireCollection) {
+
+    angular.extend(this, AngularfireCollection);
+
+    Object.defineProperty(this, 'baseURL', {
+      value: '/game', writable: false
+    });
+
+  }
+])
+
+.service('AvailableGame', ['AF', 'AngularfireCollection',
+  function(AF, AngularfireCollection) {
+
+    angular.extend(this, AngularfireCollection);
+
+    Object.defineProperty(this, 'baseURL', {
+      value: '/available_game', writable: false
+    });
+
+  }
+])
+
+.service('Matchmaker', ['AF', 'Auth', '$q', '$timeout', '$rootScope', 'Game',
+         'AvailableGame',
+  function(AF, Auth, $q, $timeout, $rootScope, Game, AvailableGame) {
+
+    var cuid = Auth.current_user.id;
+
+    /**
+     * Match current user to a game.
+     */
     this.match = function() {
-      return findGame().then(function(hasGame) {
-        if (!hasGame) {
-          return makeGame();
-        }
-      });
+      return findOrCreateWaitingRoom().then(enterWaitingRoom)
+        .then(waitForMatch).then(enterGame).then(cleanup);
     };
 
-    function findGame() {
-      var deferred = $q.defer();
+    function findOrCreateWaitingRoom() {
+      console.log('Loading waiting room...');
 
-      $available_game.$on('loaded', function(game) {
-        if (game) {
-          var game_id = Object.keys(game)[0],
-              player_id = game[game_id];
+      var deferred        = $q.defer(),
+          $available_game = null;
 
-          // do not match player with self
-          if (FBAuth.current_user.id != player_id) {
-            deferred.resolve(true);
-            $available_game.$remove(game_id);
-            pair(game_id);
-          } else { deferred.resolve(false); }
+      AvailableGame.list(function(ag) {
+        var first_child_name = ag[0] && ag[0].$id,
+            has_current_user = !!ag.$getRecord(cuid);
 
-        } else { deferred.resolve(false); }
+        $available_game = !first_child_name || has_current_user ?
+          AvailableGame.find(cuid): AvailableGame.find(first_child_name);
+
+        deferred.resolve($available_game);
       });
 
       return deferred.promise;
     }
 
-    function makeGame() {
-      return $games
-        .$add({ player1: FBAuth.current_user })
-        .then(function(game) {
-          broadcastEvent(game.name(), 'player1');
-          return $available_games
-            .$child(game.name())
-            .$set(FBAuth.current_user.id);
+    function enterWaitingRoom($available_game) {
+      console.log('Entering waiting room...');
+
+      var deferred   = $q.defer(),
+          player_num = null;
+
+      $available_game.$loaded(function(available_game) {
+
+        if (available_game.player1 && available_game.player1 !== cuid) {
+          $available_game.player2 = cuid;
+          $available_game.full = true;
+        } else {
+          $available_game.player1 = cuid;
+        }
+
+        $available_game.$save();
+        deferred.resolve($available_game);
+      });
+
+      return deferred.promise;
+    }
+
+    function waitForMatch($available_game) {
+      console.log('Waiting for match...');
+
+      var deferred   = $q.defer();
+
+      $available_game.$loaded(function(available_game) {
+        if (available_game.full) {
+          console.log('Match found!');
+          deferred.resolve($available_game);
+        }
+      });
+
+      var unwatch = $available_game.$watch(function(change) {
+        if ($available_game.full) {
+          console.log('Match found!');
+          unwatch();
+          deferred.resolve($available_game);
+        }
+      });
+
+      return deferred.promise;
+    }
+
+    function enterGame($available_game) {
+      console.log('Entering game...');
+
+      var player_num = $available_game.player1 === cuid ? 1 : 2,
+          deferred   = $q.defer(),
+          game       = null;
+
+      if (player_num === 1) {
+        Game.push({
+          player1: $available_game.player1,
+          player2: $available_game.player2,
+        }).then(function(game) {
+          $available_game.game_id = game.name();
+          $available_game.$save();
+
+          $rootScope.$emit('matchmaker:gameFound', Game.find(game.name()),
+                           player_num);
+
+          deferred.resolve($available_game);
         });
+      }
+
+      return deferred.promise;
     }
 
-    function pair(game_id) {
-      var $game = $games.$child(game_id);
-      $game.$child('player2').$set(FBAuth.current_user);
-      prepareGame(game_id);
-      broadcastEvent(game_id, 'player2');
-    }
+    function cleanup($available_game) {
+      console.log('Entering game...');
+      console.log($available_game);
 
-    function prepareGame(game_id) {
-      // add questions
-      var $questions = $games.$child(game_id).$child('questions');
-      $questions.$set([
-        {q: "This"},
-        {q: "is"},
-        {q: "a"},
-        {q: "question"},
-        {q: "yay"}
-      ]);
-    }
-
-    function broadcastEvent(game_id, player_num) {
-      $rootScope.$emit(Events.gameFound, game_id, player_num);
     }
 
   }
 ])
 
-.service('GameManager', ['FB', '$q', '$rootScope', '$location',
-  function(FB, $q, $rootScope, $location) {
+.service('GameManager', ['FB', 'AF', '$q', '$rootScope', '$location',
+  function(FB, AF, $q, $rootScope, $location) {
+
+    return;
+
     // init
     var that = this;
 
@@ -158,8 +254,8 @@ angular.module('myApp.services', ["firebase"])
 
     // 'local' variables
     var deferred_game_ref = $q.defer();
-    var authenticated = FB.FbRef('/.info/authenticated');
-    var connected = FB.FbRef('/.info/connected');
+    var authenticated = FB.ref('/.info/authenticated');
+    var connected = FB.ref('/.info/connected');
     var player = null;
 
     // 'class' variables
@@ -170,11 +266,11 @@ angular.module('myApp.services', ["firebase"])
      **/
     $rootScope.$on('matchmaker:gameFound', function(event, game_id, player_num) {
       // resolve game promise
-      $game = FB.obj('/games/' + game_id);
+      $game = AF.ref('/games/' + game_id);
       deferred_game_ref.resolve($game);
 
       // get player ref - lol, angularfire object does not have 'onDisconnect'
-      player = FB.FbRef('/games/' + game_id + '/' + player_num);
+      player = FB.ref('/games/' + game_id + '/' + player_num);
 
       // handle session-end and refresh
       connected.on('value', function(snap) {
@@ -217,6 +313,4 @@ angular.module('myApp.services', ["firebase"])
   }
 ]);
 
-
 })();
-
