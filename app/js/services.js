@@ -71,173 +71,152 @@ angular.module('myApp.services', ["firebase"])
   }
 ])
 
-.service('AngularfireCollection', ['AF', '$q',
+.factory('AFCollection', ['AF', '$q',
   function(AF, $q) {
 
-    this.list = function(cb, err) { // returns af ref
-      var return_val;
+    var constructor = function(baseURL) {
+      Object.defineProperty(this, 'baseURL', {
+        value: baseURL, writable: false
+      });
+      Object.defineProperty(this, '$fbref', {
+        value: AF.ref(this.baseURL),
+        writable: false,
+      });
+    }
 
-      if (cb || err) {
-        return_val = AF.ref(this.baseURL).$asArray().$loaded(cb, err);
-      } else {
-        return_val = AF.ref(this.baseURL).$asArray();
+    function asObject(ref) {
+      return AF.ref(ref).$asObject().$loaded();
+    }
+
+    constructor.prototype = {
+
+      list: function() {
+        return this.$fbref.$asArray().$loaded();
+      },
+
+      first: function() {
+        var self = this;
+        return self.list().then(function(list){
+          var key = list.$keyAt(0);
+          return key ? self.find(key) : null;
+        });
+      },
+
+      find: function (name) {
+        return asObject(this.$fbref.$ref().child(name));
+      },
+
+      remove: function(name) {
+        return this.$fbref.$remove(name);
+      },
+
+      push: function(data) {
+        return this.list().then( function(list) {
+          return list.$add(data);
+        }).then(function(ref) {
+          return asObject(ref);
+        });
       }
 
-      return return_val;
     };
 
-    this.find = function (name, cb, err) { // returns af ref
-      var return_val;
-
-      if (cb || err) {
-        return_val = AF.ref(this.baseURL+'/'+name).$asObject().$loaded(cb,err);
-      } else {
-        return_val = AF.ref(this.baseURL + '/' + name).$asObject();
-      }
-
-      return return_val;
-    };
-
-    this.push = function(data) {
-      return this.list().$add(data);
-    };
+    return constructor;
 
   }
 ])
 
-.service('Game', ['AF', 'AngularfireCollection',
-  function(AF, AngularfireCollection) {
-
-    angular.extend(this, AngularfireCollection);
-
-    Object.defineProperty(this, 'baseURL', {
-      value: '/game', writable: false
-    });
-
+.factory('Games', ['AFCollection',
+  function(AFCollection) {
+    return new AFCollection('/games');
   }
 ])
 
-.service('AvailableGame', ['AF', 'AngularfireCollection',
-  function(AF, AngularfireCollection) {
-
-    angular.extend(this, AngularfireCollection);
-
-    Object.defineProperty(this, 'baseURL', {
-      value: '/available_game', writable: false
-    });
-
+.factory('AvailableGames', ['Collection',
+  function(Collection) {
+    return new Collection('/available_games');
   }
 ])
 
-.service('Matchmaker', ['AF', 'Auth', '$q', '$timeout', '$rootScope', 'Game',
-         'AvailableGame',
-  function(AF, Auth, $q, $timeout, $rootScope, Game, AvailableGame) {
+.service('Matchmaker', ['AF', '$q', '$timeout', '$rootScope', 'Games',
+         'AvailableGames',
+  function(AF, $q, $timeout, $rootScope, Games, AvailableGames) {
 
-    var cuid = Auth.current_user.id;
 
     /**
      * Match current user to a game.
      */
-    this.match = function() {
-      return findOrCreateWaitingRoom().then(enterWaitingRoom)
-        .then(waitForMatch).then(enterGame).then(cleanup);
-    };
+    this.match = function(user) {
+      return findAvailableGame().then(enterGame).then(waitForMatch).then(cleanUp);
 
-    function findOrCreateWaitingRoom() {
-      console.log('Loading waiting room...');
+      function findAvailableGame() {
 
-      var deferred        = $q.defer(),
-          $available_game = null;
+        return AvailableGames.first().then(function(availableGame) {
 
-      AvailableGame.list(function(ag) {
-        var first_child_name = ag[0] && ag[0].$id,
-            has_current_user = !!ag.$getRecord(cuid);
+          if (canEnterGame(availableGame)) {
+            return availableGame;
+          } else {
+            return createGame();
+          }
 
-        $available_game = !first_child_name || has_current_user ?
-          AvailableGame.find(cuid): AvailableGame.find(first_child_name);
-
-        deferred.resolve($available_game);
-      });
-
-      return deferred.promise;
-    }
-
-    function enterWaitingRoom($available_game) {
-      console.log('Entering waiting room...');
-
-      var deferred   = $q.defer(),
-          player_num = null;
-
-      $available_game.$loaded(function(available_game) {
-
-        if (available_game.player1 && available_game.player1 !== cuid) {
-          $available_game.player2 = cuid;
-          $available_game.full = true;
-        } else {
-          $available_game.player1 = cuid;
-        }
-
-        $available_game.$save();
-        deferred.resolve($available_game);
-      });
-
-      return deferred.promise;
-    }
-
-    function waitForMatch($available_game) {
-      console.log('Waiting for match...');
-
-      var deferred   = $q.defer();
-
-      $available_game.$loaded(function(available_game) {
-        if (available_game.full) {
-          console.log('Match found!');
-          deferred.resolve($available_game);
-        }
-      });
-
-      var unwatch = $available_game.$watch(function(change) {
-        if ($available_game.full) {
-          console.log('Match found!');
-          unwatch();
-          deferred.resolve($available_game);
-        }
-      });
-
-      return deferred.promise;
-    }
-
-    function enterGame($available_game) {
-      console.log('Entering game...');
-
-      var player_num = $available_game.player1 === cuid ? 1 : 2,
-          deferred   = $q.defer(),
-          game       = null;
-
-      if (player_num === 1) {
-        Game.push({
-          player1: $available_game.player1,
-          player2: $available_game.player2,
-        }).then(function(game) {
-          $available_game.game_id = game.name();
-          $available_game.$save();
-
-          $rootScope.$emit('matchmaker:gameFound', Game.find(game.name()),
-                           player_num);
-
-          deferred.resolve($available_game);
         });
       }
 
-      return deferred.promise;
-    }
+      function enterGame(availableGame) {
+        return Games.find(availableGame.game_id).then(function(game) {
 
-    function cleanup($available_game) {
-      console.log('Entering game...');
-      console.log($available_game);
+          var gameData = {};
+          var player = game.player1 ? "player2" : "player1";
 
-    }
+          gameData[player] = user;
 
+          if (game.$value === 'empty' ) {
+            gameData['available_game_id'] = availableGame.$id;
+            game.$inst().$set(gameData);
+          } else {
+            game.$inst().$update(gameData);
+          }
+
+          return game;
+        });
+      }
+
+      function waitForMatch(game) {
+        var deferred = $q.defer();
+
+        function resolve() {
+          if (game.player1 && game.player2) {
+            deferred.resolve(game);
+          }
+        }
+
+        game.$watch(resolve);
+        resolve();
+
+        return deferred.promise;
+      }
+
+      function cleanUp(game) {
+        AvailableGames.remove(game.available_game_id);
+        game.available_game_id = null;
+        game.save();
+
+        return game;
+      }
+
+      function createGame() {
+        return Games.push('empty').then(function(game) {
+          return AvailableGames.push({
+            game_id: game.$id,
+            player1: user.id,
+          })
+        });
+      }
+
+      function canEnterGame(availableGame) {
+        return availableGame && (availableGame.player1 !== user.id);
+      }
+
+    };
   }
 ])
 
