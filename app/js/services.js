@@ -27,46 +27,50 @@ angular.module('myApp.services', ["firebase"])
   }
 ])
 
-.service('Auth', ['FBURL', '$firebaseSimpleLogin', '$rootScope', '$q', '$timeout',
-  function(FBURL, $firebaseSimpleLogin, $rootScope, $q, $timeout) {
+.service('Auth', ['FBURL', '$firebaseSimpleLogin',
+  function(FBURL, $firebaseSimpleLogin) {
 
     var auth_obj = $firebaseSimpleLogin(new Firebase(FBURL));
-
-    var that = this;
 
     this.login_anon = function() {
       return auth_obj.$getCurrentUser().then(function(user) {
         if (!user) {
-          return auth_obj.$login('anonymous', {rememberMe: false});
+          return auth_obj.$login('anonymous', {rememberMe: true});
         }
       });
     };
 
     this.logout = function() {
-      if (that.current_user) {
-        var deferred = $q.defer();
-        auth_obj.$logout();
-        $timeout(function() {
-          deferred.reject();
-        }, 3000);
-        $rootScope.$on('$firebaseSimpleLogin:logout', function() {
-          deferred.resolve();
-        });
-        return deferred.promise;
-      }
+      auth_obj.$logout();
     };
 
-    this.current_user = null;
+  }
+])
+
+.factory('current_user', ['$rootScope',
+  function($rootScope) {
+
+    var current_user = {};
 
     $rootScope.$on('$firebaseSimpleLogin:login', function(event, user) {
-      that.current_user = user;
       console.log('Logged in as:', user.id);
+      for (var attr in user) {
+        if (user.hasOwnProperty(attr)) {
+          current_user[attr] = user[attr];
+        }
+      }
     });
 
     $rootScope.$on('$firebaseSimpleLogin:logout', function() {
-      that.current_user = null;
       console.log('Logged out');
+      for (var attr in current_user) {
+        if (current_user.hasOwnProperty(attr)) {
+          delete current_user[attr];
+        }
+      }
     });
+
+    return current_user;
 
   }
 ])
@@ -82,7 +86,7 @@ angular.module('myApp.services', ["firebase"])
         value: AF.ref(this.baseURL),
         writable: false,
       });
-    }
+    };
 
     function asObject(ref) {
       return AF.ref(ref).$asObject().$loaded();
@@ -131,16 +135,15 @@ angular.module('myApp.services', ["firebase"])
   }
 ])
 
-.factory('AvailableGames', ['Collection',
-  function(Collection) {
-    return new Collection('/available_games');
+.factory('AvailableGames', ['AFCollection',
+  function(AFCollection) {
+    return new AFCollection('/available_games');
   }
 ])
 
 .service('Matchmaker', ['AF', '$q', '$timeout', '$rootScope', 'Games',
          'AvailableGames',
   function(AF, $q, $timeout, $rootScope, Games, AvailableGames) {
-
 
     /**
      * Match current user to a game.
@@ -170,7 +173,7 @@ angular.module('myApp.services', ["firebase"])
           gameData[player] = user;
 
           if (game.$value === 'empty' ) {
-            gameData['available_game_id'] = availableGame.$id;
+            gameData.available_game_id = availableGame.$id;
             game.$inst().$set(gameData);
           } else {
             game.$inst().$update(gameData);
@@ -208,7 +211,7 @@ angular.module('myApp.services', ["firebase"])
           return AvailableGames.push({
             game_id: game.$id,
             player1: user.id,
-          })
+          });
         });
       }
 
