@@ -3,153 +3,228 @@
 
 angular.module('myApp.services', ["firebase"])
 
-.service('FB', ['FBURL', '$firebase',
-  function(FBURL, $firebase, $firebaseSimpleLogin) {
+.service('FB', ['FBURL',
+  function(FBURL) {
 
-    this.obj = function(arg) {
-      if (typeof  arg === 'string') {
-        return $firebase(this.FbRef(arg));
-      } else {
-        return $firebase(arg);
-      }
-    };
-
-    this.FbRef = function(path) {
+    this.ref = function(path) {
       return new Firebase(FBURL + path);
     };
 
   }
 ])
 
-.service('FBAuth', ['FB', 'FBURL', '$firebaseSimpleLogin', '$rootScope', '$q', '$timeout',
-  function(FB, FBURL, $firebaseSimpleLogin, $rootScope, $q, $timeout) {
+.service('AF', ['FBURL', '$firebase', 'FB',
+  function(FBURL, $firebase, FB) {
+
+    this.ref = function(arg) {
+      if (typeof  arg === 'string') {
+        return $firebase(FB.ref(arg));
+      } else {
+        return $firebase(arg);
+      }
+    };
+
+  }
+])
+
+.service('Auth', ['FBURL', '$firebaseSimpleLogin', '$rootScope', '$q', '$timeout',
+  function(FBURL, $firebaseSimpleLogin, $rootScope, $q, $timeout) {
 
     var auth_obj = $firebaseSimpleLogin(new Firebase(FBURL));
 
-    this.current_user = null;
+    var that = this;
 
     this.login_anon = function() {
       return auth_obj.$getCurrentUser().then(function(user) {
         if (!user) {
-          return auth_obj.$login('anonymous', {rememberMe: true});
+          return auth_obj.$login('anonymous', {rememberMe: false});
         }
       });
     };
 
     this.logout = function() {
-      var deferred = $q.defer();
-      auth_obj.$logout();
-      $timeout(function() {
-        deferred.reject();
-      }, 3000);
-      $rootScope.$on('$firebaseSimpleLogin:logout', function() {
-        deferred.resolve();
-      });
-      return deferred.promise;
+      if (that.current_user) {
+        var deferred = $q.defer();
+        auth_obj.$logout();
+        $timeout(function() {
+          deferred.reject();
+        }, 3000);
+        $rootScope.$on('$firebaseSimpleLogin:logout', function() {
+          deferred.resolve();
+        });
+        return deferred.promise;
+      }
     };
 
-    var that = this;
+    this.current_user = null;
+
     $rootScope.$on('$firebaseSimpleLogin:login', function(event, user) {
       that.current_user = user;
-      console.log('Login as:', user.id);
+      console.log('Logged in as:', user.id);
     });
 
     $rootScope.$on('$firebaseSimpleLogin:logout', function() {
       that.current_user = null;
+      console.log('Logged out');
     });
 
   }
 ])
 
-.service('Matchmaker', ['FB', 'FBAuth', '$q', '$timeout', '$rootScope',
-  function(FB, FBAuth, $q, $timeout, $rootScope) {
-    var that = this;
-    var deferred_game_id = $q.defer();
+.factory('AFCollection', ['AF', '$q',
+  function(AF, $q) {
 
-    var Events =  {
-      gameFound: 'matchmaker:gameFound'
-    };
-
-    // firebase references
-    var $games           = FB.obj('/games'),
-        $available_games = FB.obj('/available_games'),
-        $users = FB.obj('/users'),
-        /* query */
-        available_game   = FB.FbRef('/available_games').startAt().limit(1),
-        $available_game  = FB.obj(available_game);
-
-    this.game_id = deferred_game_id.promise;
-
-    // match current player with an opponent, set up game
-    // returns promise
-    this.match = function() {
-      return findGame().then(function(hasGame) {
-        if (!hasGame) {
-          return makeGame();
-        }
+    var constructor = function(baseURL) {
+      Object.defineProperty(this, 'baseURL', {
+        value: baseURL, writable: false
       });
-    };
-
-    function findGame() {
-      var deferred = $q.defer();
-
-      $available_game.$on('loaded', function(game) {
-        if (game) {
-          var game_id = Object.keys(game)[0],
-              player_id = game[game_id];
-
-          // do not match player with self
-          if (FBAuth.current_user.id != player_id) {
-            deferred.resolve(true);
-            $available_game.$remove(game_id);
-            pair(game_id);
-          } else { deferred.resolve(false); }
-
-        } else { deferred.resolve(false); }
+      Object.defineProperty(this, '$fbref', {
+        value: AF.ref(this.baseURL),
+        writable: false,
       });
-
-      return deferred.promise;
     }
 
-    function makeGame() {
-      return $games
-        .$add({ player1: FBAuth.current_user })
-        .then(function(game) {
-          broadcastEvent(game.name(), 'player1');
-          return $available_games
-            .$child(game.name())
-            .$set(FBAuth.current_user.id);
+    function asObject(ref) {
+      return AF.ref(ref).$asObject().$loaded();
+    }
+
+    constructor.prototype = {
+
+      list: function() {
+        return this.$fbref.$asArray().$loaded();
+      },
+
+      first: function() {
+        var self = this;
+        return self.list().then(function(list){
+          var key = list.$keyAt(0);
+          return key ? self.find(key) : null;
         });
-    }
+      },
 
-    function pair(game_id) {
-      var $game = $games.$child(game_id);
-      $game.$child('player2').$set(FBAuth.current_user);
-      prepareGame(game_id);
-      broadcastEvent(game_id, 'player2');
-    }
+      find: function (name) {
+        return asObject(this.$fbref.$ref().child(name));
+      },
 
-    function prepareGame(game_id) {
-      // add questions
-      var $questions = $games.$child(game_id).$child('questions');
-      $questions.$set([
-        {q: "This"},
-        {q: "is"},
-        {q: "a"},
-        {q: "question"},
-        {q: "yay"}
-      ]);
-    }
+      remove: function(name) {
+        return this.$fbref.$remove(name);
+      },
 
-    function broadcastEvent(game_id, player_num) {
-      $rootScope.$emit(Events.gameFound, game_id, player_num);
-    }
+      push: function(data) {
+        return this.list().then( function(list) {
+          return list.$add(data);
+        }).then(function(ref) {
+          return asObject(ref);
+        });
+      }
+
+    };
+
+    return constructor;
 
   }
 ])
 
-.service('GameManager', ['FB', '$q', '$rootScope', '$location',
-  function(FB, $q, $rootScope, $location) {
+.factory('Games', ['AFCollection',
+  function(AFCollection) {
+    return new AFCollection('/games');
+  }
+])
+
+.factory('AvailableGames', ['Collection',
+  function(Collection) {
+    return new Collection('/available_games');
+  }
+])
+
+.service('Matchmaker', ['AF', '$q', '$timeout', '$rootScope', 'Games',
+         'AvailableGames',
+  function(AF, $q, $timeout, $rootScope, Games, AvailableGames) {
+
+
+    /**
+     * Match current user to a game.
+     */
+    this.match = function(user) {
+      return findAvailableGame().then(enterGame).then(waitForMatch).then(cleanUp);
+
+      function findAvailableGame() {
+
+        return AvailableGames.first().then(function(availableGame) {
+
+          if (canEnterGame(availableGame)) {
+            return availableGame;
+          } else {
+            return createGame();
+          }
+
+        });
+      }
+
+      function enterGame(availableGame) {
+        return Games.find(availableGame.game_id).then(function(game) {
+
+          var gameData = {};
+          var player = game.player1 ? "player2" : "player1";
+
+          gameData[player] = user;
+
+          if (game.$value === 'empty' ) {
+            gameData['available_game_id'] = availableGame.$id;
+            game.$inst().$set(gameData);
+          } else {
+            game.$inst().$update(gameData);
+          }
+
+          return game;
+        });
+      }
+
+      function waitForMatch(game) {
+        var deferred = $q.defer();
+
+        function resolve() {
+          if (game.player1 && game.player2) {
+            deferred.resolve(game);
+          }
+        }
+
+        game.$watch(resolve);
+        resolve();
+
+        return deferred.promise;
+      }
+
+      function cleanUp(game) {
+        AvailableGames.remove(game.available_game_id);
+        game.available_game_id = null;
+        game.save();
+
+        return game;
+      }
+
+      function createGame() {
+        return Games.push('empty').then(function(game) {
+          return AvailableGames.push({
+            game_id: game.$id,
+            player1: user.id,
+          })
+        });
+      }
+
+      function canEnterGame(availableGame) {
+        return availableGame && (availableGame.player1 !== user.id);
+      }
+
+    };
+  }
+])
+
+.service('GameManager', ['FB', 'AF', '$q', '$rootScope', '$location',
+  function(FB, AF, $q, $rootScope, $location) {
+
+    return;
+
     // init
     var that = this;
 
@@ -158,8 +233,8 @@ angular.module('myApp.services', ["firebase"])
 
     // 'local' variables
     var deferred_game_ref = $q.defer();
-    var authenticated = FB.FbRef('/.info/authenticated');
-    var connected = FB.FbRef('/.info/connected');
+    var authenticated = FB.ref('/.info/authenticated');
+    var connected = FB.ref('/.info/connected');
     var player = null;
 
     // 'class' variables
@@ -170,11 +245,11 @@ angular.module('myApp.services', ["firebase"])
      **/
     $rootScope.$on('matchmaker:gameFound', function(event, game_id, player_num) {
       // resolve game promise
-      $game = FB.obj('/games/' + game_id);
+      $game = AF.ref('/games/' + game_id);
       deferred_game_ref.resolve($game);
 
       // get player ref - lol, angularfire object does not have 'onDisconnect'
-      player = FB.FbRef('/games/' + game_id + '/' + player_num);
+      player = FB.ref('/games/' + game_id + '/' + player_num);
 
       // handle session-end and refresh
       connected.on('value', function(snap) {
@@ -217,6 +292,4 @@ angular.module('myApp.services', ["firebase"])
   }
 ]);
 
-
 })();
-
