@@ -4,8 +4,9 @@
 
 angular.module('myApp.controllers', [])
 
-.controller('RootCtrl', ['$scope', 'Auth', 'GameManager',
-  function($scope, Auth, GameManager) {
+.controller('RootCtrl', ['$scope', 'Auth', 'GameManager', 'current_user',
+  function($scope, Auth, GameManager, current_user) {
+
     // scoped variables
     $scope.logout = function() {
       Auth.logout();
