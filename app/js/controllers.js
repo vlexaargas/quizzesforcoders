@@ -1,38 +1,44 @@
+(function() {
 'use strict';
-
-/* Controllers */
 
 angular.module('myApp.controllers', [])
 
-.controller('RootCtrl', ['$scope', 'Auth', 'GameManager', 'current_user',
-  function($scope, Auth, GameManager, current_user) {
+.controller('RootCtrl', ['$scope', 'Auth',
+  function($scope, Auth) {
 
-    // scoped variables
+    $scope.ready = false;
+
+    Auth.login_anon().then(function() {
+      $scope.ready = true;
+    });
+
+    // this is just in here for testing
     $scope.logout = function() {
       Auth.logout();
     };
-    Auth.login_anon();
+
   }
 ])
 
-.controller('HomeCtrl', [
+.controller('HomeCtrl', ['$scope',
+  function($scope) { }
+])
+
+.controller('matchmakerCtrl', ['$scope', 'current_user', 'Matchmaker',
+  function($scope, current_user, Matchmaker) {
+
+    Matchmaker.match(current_user);
+
+    $scope.$on('$destroy', function() {
+      Matchmaker.cleanup();
+    });
+
+  }
+])
+
+.controller('GameCtrl', [
   function() {
   }
-])
-
-.controller('GameCtrl', ['$scope', 'Matchmaker', 'GameManager', 'Auth',
-  function($scope, Matchmaker, GameManager, Auth) {
-
-    Matchmaker.match();
-
-    //$scope.game = "loading";
-    //$scope.player = FBAuth.current_user;
-
-    //// match current player to game
-
-    //GameManager.game.then(function(game) {
-      //$scope.game = game;
-    //});
-
-  }
 ]);
+
+}());
