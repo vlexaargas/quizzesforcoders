@@ -27,8 +27,8 @@ angular.module('myApp.services', ["firebase"])
   }
 ])
 
-.service('Auth', ['FBURL', '$firebaseSimpleLogin',
-  function(FBURL, $firebaseSimpleLogin) {
+.service('Auth', ['FBURL', '$firebaseSimpleLogin', 'current_user',
+  function(FBURL, $firebaseSimpleLogin, current_user) {
 
     var auth_obj = $firebaseSimpleLogin(new Firebase(FBURL));
 
@@ -110,14 +110,17 @@ angular.module('myApp.services', ["firebase"])
         return asObject(this.$fbref.$ref().child(name));
       },
 
-      remove: function(name) {
+      remove: function(param) {
+        name = typeof param === 'string' ? param : param.$id;
         return this.$fbref.$remove(name);
       },
 
-      push: function(data) {
-        return this.list().then( function(list) {
-          return list.$add(data);
-        }).then(function(ref) {
+      push: function(data, cb) {
+        return this.list().then(function(list) {
+          return list.$add(null);
+        }).then(cb)
+        .then(function(ref) {
+          ref.set(data);
           return asObject(ref);
         });
       }
@@ -142,155 +145,91 @@ angular.module('myApp.services', ["firebase"])
 ])
 
 .service('Matchmaker', ['AF', '$q', '$timeout', '$rootScope', 'Games',
-         'AvailableGames',
-  function(AF, $q, $timeout, $rootScope, Games, AvailableGames) {
+         'AvailableGames', '$location',
+  function(AF, $q, $timeout, $rootScope, Games, AvailableGames, $location) {
 
-    /**
-     * Match current user to a game.
-     */
-    this.match = function(user) {
-      return findAvailableGame().then(enterGame).then(waitForMatch).then(cleanUp);
-
-      function findAvailableGame() {
-
-        return AvailableGames.first().then(function(availableGame) {
-
-          if (canEnterGame(availableGame)) {
-            return availableGame;
-          } else {
-            return createGame();
-          }
-
-        });
-      }
-
-      function enterGame(availableGame) {
-        return Games.find(availableGame.game_id).then(function(game) {
-
-          var gameData = {};
-          var player = game.player1 ? "player2" : "player1";
-
-          gameData[player] = user;
-
-          if (game.$value === 'empty' ) {
-            gameData.available_game_id = availableGame.$id;
-            game.$inst().$set(gameData);
-          } else {
-            game.$inst().$update(gameData);
-          }
-
-          return game;
-        });
-      }
-
-      function waitForMatch(game) {
-        var deferred = $q.defer();
-
-        function resolve() {
-          if (game.player1 && game.player2) {
-            deferred.resolve(game);
-          }
-        }
-
-        game.$watch(resolve);
-        resolve();
-
-        return deferred.promise;
-      }
-
-      function cleanUp(game) {
-        AvailableGames.remove(game.available_game_id);
-        game.available_game_id = null;
-        game.save();
-
-        return game;
-      }
-
-      function createGame() {
-        return Games.push('empty').then(function(game) {
-          return AvailableGames.push({
-            game_id: game.$id,
-            player1: user.id,
-          });
-        });
-      }
-
-      function canEnterGame(availableGame) {
-        return availableGame && (availableGame.player1 !== user.id);
-      }
-
+    var data = {
+      name: null,
+      game: null,
+      availableGame: null
     };
-  }
-])
 
-.service('GameManager', ['FB', 'AF', '$q', '$rootScope', '$location',
-  function(FB, AF, $q, $rootScope, $location) {
+    this.match = function(user) {
+      data.user = user;
+      return findAvailableGame().then(enterGame).then(waitForMatch).then(route);
+    };
 
-    return;
+    this.cleanup = function() {
+      var game = data.game, availableGame = data.availableGame;
+      availableGame && AvailableGames.remove(availableGame);
+      game && !(game.player1 && game.player2) && Games.remove(game);
+    };
 
-    // init
-    var that = this;
-
-    // firebase references
-    var $game = null;
-
-    // 'local' variables
-    var deferred_game_ref = $q.defer();
-    var authenticated = FB.ref('/.info/authenticated');
-    var connected = FB.ref('/.info/connected');
-    var player = null;
-
-    // 'class' variables
-    this.game = deferred_game_ref.promise;
-
-    /**
-     * MANAGE PLAYERS
-     **/
-    $rootScope.$on('matchmaker:gameFound', function(event, game_id, player_num) {
-      // resolve game promise
-      $game = AF.ref('/games/' + game_id);
-      deferred_game_ref.resolve($game);
-
-      // get player ref - lol, angularfire object does not have 'onDisconnect'
-      player = FB.ref('/games/' + game_id + '/' + player_num);
-
-      // handle session-end and refresh
-      connected.on('value', function(snap) {
-        if (snap.val() === true) {
-          player.onDisconnect().remove();
+    function findAvailableGame() {
+      return AvailableGames.first().then(function(availableGame) {
+        if (canEnterGame(availableGame)) {
+          return availableGame;
+        } else {
+          return createGame();
         }
       });
+    }
 
-      // handle back/forward on history
-      $rootScope.$on('$routeChangeStart', function() {
-        if ($location.path() === '/home') {
-          player.remove();
-          // reset promise
-          deferred_game_ref = $q.defer();
-          that.game = deferred_game_ref.promise;
+    function enterGame(availableGame) {
+      data.availableGame = availableGame;
+      return Games.find(availableGame.game_id).then(function(game) {
+        var gameData = {};
+        var player = game.player1 ? "player2" : "player1";
+        gameData[player] = data.user;
+        if (game.$value === 'empty' ) {
+          gameData.available_game_id = availableGame.$id;
+          game.$inst().$set(gameData);
+        } else {
+          var inst = game.$inst();
+          inst.$ref().onDisconnect().remove();
+          inst.$update(gameData);
         }
+        return game;
       });
-    });
+    }
 
-    /**
-     * MANAGE GAMES
-     **/
-    this.game.then(function($game) {
-      $game.$on('change', function() {
-        // if player 2 leaves...
-        if ($game.questions && $game.player1 && !$game.player2) {
-          console.log('player 2 left');
-
-        // if player 1 leaves...
-        } else if ($game.questions && $game.player2 && !$game.player1) {
-          console.log('player 1 left');
-
-        // if both players leave...
-        } else if ($game.questions && !$game.player2 && !$game.player1) {
-          $game.$remove();
+    function waitForMatch(game) {
+      data.game = game;
+      var deferred = $q.defer();
+      function resolve() {
+        if (game.player1 && game.player2) {
+          deferred.resolve(game);
         }
+      }
+      game.$watch(resolve);
+      resolve();
+      return deferred.promise;
+    }
+
+
+    function route(game) {
+      $location.path('/game/' + game.$id);
+    }
+
+    function createGame() {
+      return Games.push('empty', destroyOnSessionEnd).then(function(game) {
+        return AvailableGames.push({
+          game_id: game.$id,
+          player1: data.user.id,
+        }, destroyOnSessionEnd);
       });
-    });
+    }
+
+    function canEnterGame(availableGame) {
+      return availableGame && (availableGame.player1 !== data.user.id);
+    }
+
+    function destroyOnSessionEnd(ref) {
+      var deferred = $q.defer();
+      ref.onDisconnect().remove();
+      deferred.resolve(ref);
+      return deferred.promise;
+    }
 
   }
 ]);

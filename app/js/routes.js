@@ -8,23 +8,15 @@ angular.module('myApp.routes', ['ngRoute'])
        controller: 'HomeCtrl'
     });
 
-    $routeProvider.when('/game', {
+    $routeProvider.when('/matchmaker', {
+       templateUrl: 'partials/matchmaker.html',
+       controller: 'matchmakerCtrl'
+    });
+
+    $routeProvider.when('/game/:game_id', {
        templateUrl: 'partials/game.html',
        controller: 'GameCtrl'
     });
 
     $routeProvider.otherwise({redirectTo: '/home'});
- }])
-
-.run(['$rootScope', '$location', 'Auth',
-  function($rootScope, $location, Auth) {
-    // listen for route changes
-    $rootScope.$on('$routeChangeStart', function(event, next, current) {
-      if ($location.path() !== '/home') {
-        if (!Auth.current_user) {
-          $location.path('/home');
-        }
-      }
-    });
-  }
-]);
+ }]);
